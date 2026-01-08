@@ -27,9 +27,8 @@ from . import (
     fact_extraction,
     fact_storage,
     link_creation,
-    observation_regeneration,
 )
-from .types import ExtractedFact, ProcessedFact, RetainContent, RetainContentDict
+from .types import EntityLink, ExtractedFact, ProcessedFact, RetainContent, RetainContentDict
 
 logger = logging.getLogger(__name__)
 
@@ -395,15 +394,10 @@ async def retain_batch(
             causal_link_count = await link_creation.create_causal_links_batch(conn, unit_ids, non_duplicate_facts)
             log_buffer.append(f"[10] Causal links: {causal_link_count} links in {time.time() - step_start:.3f}s")
 
-            # Regenerate observations INSIDE transaction for atomicity
-            await observation_regeneration.regenerate_observations_batch(
-                conn, embeddings_model, llm_config, bank_id, entity_links, log_buffer
-            )
-
             # Map results back to original content items
             result_unit_ids = _map_results_to_contents(contents, extracted_facts, is_duplicate_flags, unit_ids)
 
-        # Trigger background tasks AFTER transaction commits (opinion reinforcement only)
+        # Trigger background tasks AFTER transaction commits
         await _trigger_background_tasks(task_backend, bank_id, unit_ids, non_duplicate_facts)
 
         # Log final summary
@@ -455,8 +449,16 @@ async def _trigger_background_tasks(
     unit_ids: list[str],
     facts: list[ProcessedFact],
 ) -> None:
-    """Trigger opinion reinforcement as background task (after transaction commits)."""
-    # Trigger opinion reinforcement if there are entities
+    """
+    Trigger background tasks after transaction commits.
+
+    Args:
+        task_backend: Task backend for submitting background jobs
+        bank_id: Bank identifier
+        unit_ids: List of created memory unit IDs
+        facts: List of processed facts
+    """
+    # Opinion reinforcement triggers if any facts have entities
     fact_entities = [[e.name for e in fact.entities] for fact in facts]
     if any(fact_entities):
         await task_backend.submit_task(
